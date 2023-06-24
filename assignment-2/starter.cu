@@ -51,6 +51,7 @@ int main(int argc, char **argv) {
                             &numAColumns);
     hostB = (float *)wbImport(wbArg_getInputFile(args, 1), &numBRows,
                             &numBColumns);
+
     //@@ Set numCRows and numCColumns
     numCRows = numARows;
     numCColumns = numBColumns;
