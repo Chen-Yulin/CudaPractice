@@ -1,4 +1,4 @@
-#include <wb.h>
+#include "libwb/wb.h"
 
 #define wbCheck(stmt)                                                     \
   do {                                                                    \
@@ -11,84 +11,149 @@
   } while (0)
 
 //@@ Define any useful program-wide constants here
+#define MASK_WIDTH 3
+#define MASK_RADIUS MASK_WIDTH/2
+#define TILE_WIDTH 8
+#define IN_TILE_WIDTH (TILE_WIDTH + MASK_WIDTH -1)
 
 //@@ Define constant memory for device kernel here
+__constant__ float deviceKernel[MASK_WIDTH * MASK_WIDTH * MASK_WIDTH];
 
 __global__ void conv3d(float *input, float *output, const int z_size,
                        const int y_size, const int x_size) {
-  //@@ Insert kernel code here
+    //@@ Insert kernel code here
+    int tx = threadIdx.x;
+    int ty = threadIdx.y;
+    int tz = threadIdx.z;
+    int row_o = blockIdx.y * TILE_WIDTH + ty;
+    int col_o = blockIdx.x * TILE_WIDTH + tx;
+    int dep_o = blockIdx.z * TILE_WIDTH + tz;
+    int row_i = row_o - MASK_RADIUS;
+    int col_i = col_o - MASK_RADIUS;
+    int dep_i = dep_o - MASK_RADIUS;
+
+    __shared__ float N_ds[IN_TILE_WIDTH][IN_TILE_WIDTH][IN_TILE_WIDTH];
+
+    if ((row_i >= 0) && (row_i < y_size) && 
+        (col_i >= 0) && (col_i < x_size) && 
+        (dep_i >=0) && (dep_i < z_size)) {
+        N_ds[tz][ty][tx] = input[(dep_i * y_size + row_i) * x_size + col_i];
+    } else {
+        N_ds[tz][ty][tx] = 0.0f;
+    }
+
+    __syncthreads();
+
+    float outputValue = 0;
+    int tileDep = tz - MASK_RADIUS;
+    int tileRow = ty - MASK_RADIUS;
+    int tileCol = tx - MASK_RADIUS;
+
+    if (tileDep >= 0 && tileDep < TILE_WIDTH && 
+        tileRow >= 0 && tileRow < TILE_WIDTH && 
+        tileCol >= 0 && tileCol < TILE_WIDTH) {
+        if (row_i >= 0 && row_i < y_size && 
+            col_i >= 0 && col_i < x_size && 
+            dep_i >= 0 && dep_i < z_size) {
+            for (int z_mask = 0; z_mask < MASK_WIDTH; ++z_mask) {// z
+                for (int y_mask = 0; y_mask < MASK_WIDTH; ++y_mask) {//y
+                    for (int x_mask = 0; x_mask < MASK_WIDTH; ++x_mask) {//x
+                        int z_in = z_mask + tileDep;
+                        int y_in = y_mask + tileRow;
+                        int x_in = x_mask + tileCol;
+                        outputValue += deviceKernel[(z_mask * MASK_WIDTH + y_mask) * MASK_WIDTH + x_mask] * N_ds[z_in][y_in][x_in];
+                    }
+                }
+            }
+            output[(dep_i * y_size + row_i) * x_size + col_i] = outputValue;
+        }
+    }
+
 }
 
 int main(int argc, char *argv[]) {
-  wbArg_t args;
-  int z_size;
-  int y_size;
-  int x_size;
-  int inputLength, kernelLength;
-  float *hostInput;
-  float *hostKernel;
-  float *hostOutput;
-  float *deviceInput;
-  float *deviceOutput;
+    wbArg_t args;
+    int z_size;
+    int y_size;
+    int x_size;
+    int inputLength, kernelLength;
+    float *hostInput;
+    float *hostKernel;
+    float *hostOutput;
+    float *deviceInput;
+    float *deviceOutput;
 
-  args = wbArg_read(argc, argv);
+    args = wbArg_read(argc, argv);
 
-  // Import data
-  hostInput = (float *)wbImport(wbArg_getInputFile(args, 0), &inputLength);
-  hostKernel =
-      (float *)wbImport(wbArg_getInputFile(args, 1), &kernelLength);
-  hostOutput = (float *)malloc(inputLength * sizeof(float));
+    // Import data
+    hostInput = (float *)wbImport(wbArg_getInputFile(args, 0), &inputLength);
+    hostKernel =
+        (float *)wbImport(wbArg_getInputFile(args, 1), &kernelLength);
+    hostOutput = (float *)malloc(inputLength * sizeof(float));
 
-  // First three elements are the input dimensions
-  z_size = hostInput[0];
-  y_size = hostInput[1];
-  x_size = hostInput[2];
-  wbLog(TRACE, "The input size is ", z_size, "x", y_size, "x", x_size);
-  assert(z_size * y_size * x_size == inputLength - 3);
-  assert(kernelLength == 27);
+    // First three elements are the input dimensions
+    z_size = hostInput[0];
+    y_size = hostInput[1];
+    x_size = hostInput[2];
+    wbLog(TRACE, "The input size is ", z_size, "x", y_size, "x", x_size);
+    assert(z_size * y_size * x_size == inputLength - 3);
+    assert(kernelLength == 27);
 
-  wbTime_start(GPU, "Doing GPU Computation (memory + compute)");
+    wbTime_start(GPU, "Doing GPU Computation (memory + compute)");
 
-  wbTime_start(GPU, "Doing GPU memory allocation");
-  //@@ Allocate GPU memory here
-  // Recall that inputLength is 3 elements longer than the input data
-  // because the first  three elements were the dimensions
-  wbTime_stop(GPU, "Doing GPU memory allocation");
+    wbTime_start(GPU, "Doing GPU memory allocation");
+    //@@ Allocate GPU memory here
+    // Recall that inputLength is 3 elements longer than the input data
+    // because the first  three elements were the dimensions
+    wbCheck(cudaMalloc((void **)&deviceInput, (inputLength - 3) * sizeof(float)));
+    wbCheck(cudaMalloc((void **)&deviceOutput, (inputLength - 3) * sizeof(float)));
 
-  wbTime_start(Copy, "Copying data to the GPU");
-  //@@ Copy input and kernel to GPU here
-  // Recall that the first three elements of hostInput are dimensions and
-  // do
-  // not need to be copied to the gpu
-  wbTime_stop(Copy, "Copying data to the GPU");
 
-  wbTime_start(Compute, "Doing the computation on the GPU");
-  //@@ Initialize grid and block dimensions here
+    wbTime_stop(GPU, "Doing GPU memory allocation");
 
-  //@@ Launch the GPU kernel here
-  cudaDeviceSynchronize();
-  wbTime_stop(Compute, "Doing the computation on the GPU");
+    wbTime_start(Copy, "Copying data to the GPU");
+    //@@ Copy input and kernel to GPU here
+    // Recall that the first three elements of hostInput are dimensions and
+    // do
+    // not need to be copied to the gpu
+    wbCheck(cudaMemcpy(deviceInput, hostInput + 3, (inputLength - 3) * sizeof(float), cudaMemcpyHostToDevice));
+    wbCheck(cudaMemcpyToSymbol(deviceKernel, hostKernel, kernelLength * sizeof(float)));
 
-  wbTime_start(Copy, "Copying data from the GPU");
-  //@@ Copy the device memory back to the host here
-  // Recall that the first three elements of the output are the dimensions
-  // and should not be set here (they are set below)
-  wbTime_stop(Copy, "Copying data from the GPU");
+    wbTime_stop(Copy, "Copying data to the GPU");
 
-  wbTime_stop(GPU, "Doing GPU Computation (memory + compute)");
+    wbTime_start(Compute, "Doing the computation on the GPU");
+    //@@ Initialize grid and block dimensions here
+    dim3 dimGrid(ceil((1.0 * x_size) / TILE_WIDTH), ceil((1.0 * y_size) / TILE_WIDTH), ceil((1.0 * z_size) / TILE_WIDTH));
+    dim3 dimBlock(TILE_WIDTH + MASK_RADIUS*2, TILE_WIDTH + MASK_RADIUS*2, TILE_WIDTH + MASK_RADIUS*2);
 
-  // Set the output dimensions for correctness checking
-  hostOutput[0] = z_size;
-  hostOutput[1] = y_size;
-  hostOutput[2] = x_size;
-  wbSolution(args, hostOutput, inputLength);
+    //@@ Launch the GPU kernel here
+    conv3d<<<dimGrid, dimBlock>>>(deviceInput, deviceOutput, z_size, y_size, x_size);
 
-  // Free device memory
-  cudaFree(deviceInput);
-  cudaFree(deviceOutput);
+    cudaDeviceSynchronize();
+    wbTime_stop(Compute, "Doing the computation on the GPU");
 
-  // Free host memory
-  free(hostInput);
-  free(hostOutput);
-  return 0;
+    wbTime_start(Copy, "Copying data from the GPU");
+    //@@ Copy the device memory back to the host here
+    // Recall that the first three elements of the output are the dimensions
+    // and should not be set here (they are set below)
+    wbCheck(cudaMemcpy(hostOutput + 3, deviceOutput, (inputLength - 3) * sizeof(float), cudaMemcpyDeviceToHost));
+
+    wbTime_stop(Copy, "Copying data from the GPU");
+
+    wbTime_stop(GPU, "Doing GPU Computation (memory + compute)");
+
+    // Set the output dimensions for correctness checking
+    hostOutput[0] = z_size;
+    hostOutput[1] = y_size;
+    hostOutput[2] = x_size;
+    wbSolution(args, hostOutput, inputLength);
+
+    // Free device memory
+    cudaFree(deviceInput);
+    cudaFree(deviceOutput);
+
+    // Free host memory
+    free(hostInput);
+    free(hostOutput);
+    return 0;
 }
