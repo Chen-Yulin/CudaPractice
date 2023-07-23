@@ -21,8 +21,33 @@ __global__ void forward_kernel(float *y, const float *x, const float *k, const i
 
     const int H_out = H - K + 1;
     const int W_out = W - K + 1;
-    (void)H_out; // silence declared but never referenced warning. remove this line when you start working
-    (void)W_out; // silence declared but never referenced warning. remove this line when you start working
+    // 计算线程索引
+    int b = blockIdx.x;
+    int m = blockIdx.y;
+    int h = threadIdx.y;
+    int w = threadIdx.z;
+
+    // 初始化输出
+    float sum = 0;
+
+    // 循环遍历输入特征图
+    for (int c = 0; c < C; c++)
+    {
+        // 计算卷积
+        for (int p = 0; p < K; p++)
+        {
+            for (int q = 0; q < K; q += 4)
+            {
+                sum += x4d(b, c, h + p, w + q) * k4d(m, c, p, q);
+                sum += x4d(b, c, h + p, w + q + 1) * k4d(m, c, p, q + 1);
+                sum += x4d(b, c, h + p, w + q + 2) * k4d(m, c, p, q + 2);
+                sum += x4d(b, c, h + p, w + q + 3) * k4d(m, c, p, q + 3);
+            }
+        }
+    }
+
+    // 将结果写入全局内存
+    y4d(b, m, h, w) = sum;
 
 // An example use of these macros:
 // float a = y4d(0,0,0,0)
