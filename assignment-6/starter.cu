@@ -1,6 +1,6 @@
 // Histogram Equalization
 
-#include <wb.h>
+#include "libwb/wb.h"
 
 #define HISTOGRAM_LENGTH 256
 
