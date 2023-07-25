@@ -1,3 +1,4 @@
+
 #ifndef MXNET_OPERATOR_NEW_FORWARD_CUH_
 #define MXNET_OPERATOR_NEW_FORWARD_CUH_
 
@@ -9,9 +10,8 @@ namespace mxnet
 {
 namespace op
 {
-// const memory declaration
-__constant__ float w_const[20000] 
-
+// const memory optimization
+__constant__ float w_const[15000];
 __global__ void forward_kernel(float *y, const float *x, const float *k, const int B, const int M, const int C, const int H, const int W, const int K)
 {
 // some kind macro definition
@@ -22,7 +22,7 @@ __global__ void forward_kernel(float *y, const float *x, const float *k, const i
     const int H_out = H - K + 1;
     const int W_out = W - K + 1;
 
-    int W_grid = int(1.0*W_out / TILE_WIDTH)+1;
+    int W_grid = ceil(1.0*W_out / TILE_WIDTH);
     // the width of the input shared image
     int X_out_width = TILE_WIDTH + K -1;
 
@@ -34,16 +34,15 @@ __global__ void forward_kernel(float *y, const float *x, const float *k, const i
 
     int n = blockIdx.x; 
     int m=blockIdx.y; 
-    int w0=threadIdx.x;// local location
-    int h0=threadIdx.y;//local location
+    int w0=threadIdx.x;
+    int h0=threadIdx.y;
     int h_base=(blockIdx.z / W_grid) * TILE_WIDTH; 
-    int h=h_base+h0; //global location
+    int h=h_base+h0; 
     int w_base=(blockIdx.z % W_grid) * TILE_WIDTH; 
-    int w=w_base+w0;//global location
+    int w=w_base+w0;
 
     float res=0;
     for (int c=0; c<C; c++){
-
 	    // load input in shared men
 	    for (int i=h; i<h_base+X_out_width; i+=TILE_WIDTH){
 		    for (int j=w; j<w_base+X_out_width; j+=TILE_WIDTH){
@@ -60,14 +59,13 @@ __global__ void forward_kernel(float *y, const float *x, const float *k, const i
         // get partial product
 	    for (int p=0; p<K; p++){
 		    for (int q=0; q<K; q++){
-			    if(h0+p < X_out_width && w0+q < X_out_width){
-				    res+=X_shared[(h0+p)*(X_out_width) + (w0+q)] * k4d(m,c,p,q);
+			    if(((h0+p) < X_out_width) && ((w0+q) < X_out_width)){
+				    res+=X_shared[(h0+p)*(X_out_width) + (w0+q)]*k4d(m,c,p,q);
 			    }
 		    }
 	    }
 	    __syncthreads();
     }
-
     // write result
     if (n<B && m<M && h<H_out && w<W_out){
 	    y4d(n,m,h,w)=res;
@@ -102,13 +100,13 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
 
     const int H_out = H - K + 1;
     const int W_out = W - K + 1;
-    const int W_grid = int(1.0*W_out/TILE_WIDTH)+1;
-    const int H_grid = int(1.0*H_out/TILE_WIDTH)+1;
+    const int W_grid = ceil(1.0*W_out/TILE_WIDTH);
+    const int H_grid = ceil(1.0*H_out/TILE_WIDTH);
     const int Z = W_grid * H_grid;
     dim3 blockDim(TILE_WIDTH, TILE_WIDTH, 1);
     dim3 gridDim(B, M, Z);
     
-    cudaMemcpyToSymbol(w_const, w.dptr_, sizeof(float) * M * C * K * K);
+    cudaMemcpyToSymbol(w_const, w.dptr_, sizeof(float)*M*C*K*K);
     // Call the kernel
     forward_kernel<<<gridDim, blockDim, sizeof(float)*((TILE_WIDTH+K-1)*(TILE_WIDTH+K-1)+K * K)>>>(y.dptr_,x.dptr_,w.dptr_, B,M,C,H,W,K);
 
